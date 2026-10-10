@@ -1,0 +1,14 @@
+# secrets
+.env
+
+# local environments and caches
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# training / sampling outputs (download them from the VM instead)
+lora_out/
+samples/
+vm/lora_out/
+vm/samples/
