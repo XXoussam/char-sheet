@@ -5,18 +5,21 @@ All caches and model weights go to /mnt/flux-project (override with the
 PROJECT_DATA_DIR env var). Create it first:
   sudo mkdir -p /mnt/flux-project && sudo chown -R $USER /mnt/flux-project
 
-The model takes one or more reference images plus a prompt. Refer to them in the
-prompt as "image 1", "image 2", ... in the order given to --ref. Default reference:
-the face close-up A. Add B for body proportions and the signature outfit.
+The model takes one or more reference images plus a prompt; the prompt refers to
+them as "image 1", "image 2", ... in order. With --soul, the character's soul file
+(soul.yaml at the repo root by default) supplies the reference images, identity,
+skin texture, outfit, prompt template, steps, size and seeds, so every image is
+built from the same description.
 
 Usage:
-  python ref_gen.py                                         # built-in real estate test prompts
-  python ref_gen.py --ref ../A-closeup-face-front.png ../B-fullbody-front.png
-  python ref_gen.py --prompt "The man from image 1 ..." --seed 1 2 3
-  python ref_gen.py --width 1024 --height 1024 --steps 6 --out ref_out_sq
+  python ref_gen.py                                          # soul.yaml, outfit sig, its test scenes
+  python ref_gen.py --outfit o2 --scene "standing in a bright modern kitchen"
+  python ref_gen.py --outfit o2 --framing "full body" --back --scene "walking away along a garden path"
+  python ref_gen.py --outfit sig --expression "laughing" --seed 1 2 3
+  python ref_gen.py --no-soul --ref face.png --prompt "The man from image 1 ..."   # raw mode
 
 FLUX.2 [klein] 4B is Apache 2.0 and not gated (no HF token needed). It is
-step-distilled: 4 steps, guidance is ignored. Text encoder and transformer are
+step-distilled: few steps, guidance is ignored. Text encoder and transformer are
 offloaded to the CPU between uses so the pair fits the 16 GB T4.
 """
 import argparse
@@ -38,40 +41,31 @@ os.environ["PIP_CACHE_DIR"] = os.path.join(DATA_DIR, "pip-cache")
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 # ----------------------------------------------------------------------------
 
-import torch
-from diffusers import Flux2KleinPipeline
-from diffusers.utils import load_image
+import yaml
 
 MODEL_ID = "black-forest-labs/FLUX.2-klein-4B"
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 
-IDENTITY = ("Keep his face exactly as in image 1: same eyes, nose, wrinkles, skin tone, "
-            "grey-and-black moustache and short goatee, voluminous dark curly hair.")
-STYLE = ("Photorealistic photograph, 50mm lens, natural light, sharp focus on his face, "
-         "natural skin texture with visible pores, high detail.")
-DEFAULT_PROMPTS = [
-    f"The man from image 1, waist up, smiling warmly at the camera, wearing a navy blazer over a white shirt, "
-    f"standing in a bright modern kitchen with a white marble island. {IDENTITY} {STYLE}",
-    f"The man from image 1, full body, standing at the open front door of a modern white villa, "
-    f"welcoming gesture toward the entrance, wearing a beige linen suit, sunny garden. {IDENTITY} {STYLE}",
-    f"The man from image 1, waist up, presenting a spacious living room with large windows, "
-    f"one hand extended toward the room, wearing a light blue shirt. {IDENTITY} {STYLE}",
-    f"The man from image 1, close-up portrait, front view, gentle smile, wearing his mustard turban "
-    f"and white mandarin-collar jacket, plain light grey background. {IDENTITY} {STYLE}",
-]
-
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--ref", nargs="+", default=[os.path.join(REPO, "A-closeup-face-front.png")],
-                   help="reference images, referred to as image 1, image 2, ... in the prompt")
-    p.add_argument("--prompt", nargs="+", default=None, help="default: built-in real estate test prompts")
-    p.add_argument("--seed", type=int, nargs="+", default=[42], help="one image per seed per prompt")
-    p.add_argument("--steps", type=int, default=4, help="4 is the distilled default; 6-8 can add detail")
-    p.add_argument("--width", type=int, default=832)
-    p.add_argument("--height", type=int, default=1216)
+    p.add_argument("--soul", default=os.path.join(REPO, "soul.yaml"), help="character soul file")
+    p.add_argument("--no-soul", action="store_true", help="raw mode: only --ref and --prompt")
+    p.add_argument("--outfit", default="sig", help="outfit key from the soul file (e.g. sig, o2)")
+    p.add_argument("--scene", nargs="+", default=None, help="one image set per scene (default: soul scenes)")
+    p.add_argument("--framing", default=None, help="e.g. 'close-up portrait', 'waist up', 'full body'")
+    p.add_argument("--pose", default=None)
+    p.add_argument("--expression", default=None)
+    p.add_argument("--back", action="store_true", help="also pass the outfit's back reference")
+    p.add_argument("--ref", nargs="+", default=None, help="override the reference images")
+    p.add_argument("--prompt", nargs="+", default=None, help="full prompts (skips the soul template)")
+    p.add_argument("--seed", type=int, nargs="+", default=None)
+    p.add_argument("--steps", type=int, default=None)
+    p.add_argument("--width", type=int, default=None)
+    p.add_argument("--height", type=int, default=None)
     p.add_argument("--out", default=os.path.join(HERE, "ref_out"))
+    p.add_argument("--print-prompt", action="store_true", help="print prompts and exit (no GPU needed)")
     p.add_argument("--fp16", action="store_true",
                    help="run in fp16 instead of bf16 (try if bf16 is too slow on the T4; may give black images)")
     p.add_argument("--no-offload", action="store_true",
@@ -79,42 +73,107 @@ def parse_args():
     return p.parse_args()
 
 
+def clean(text):
+    return " ".join(str(text).split())
+
+
+def build_jobs(args):
+    """Return (reference paths, prompts, generation settings) from the soul file and CLI."""
+    gen = {"model": MODEL_ID, "steps": 4, "width": 832, "height": 1216, "seeds": [42]}
+    if args.no_soul:
+        if not (args.ref and args.prompt):
+            raise SystemExit("--no-soul needs --ref and --prompt")
+        return args.ref, args.prompt, gen
+
+    with open(args.soul, encoding="utf-8") as f:
+        soul = yaml.safe_load(f)
+    base = os.path.dirname(os.path.abspath(args.soul))
+    gen.update(soul.get("generation", {}))
+    if args.outfit not in soul["outfits"]:
+        raise SystemExit(f"Unknown outfit '{args.outfit}'. Available: {', '.join(soul['outfits'])}")
+    outfit = soul["outfits"][args.outfit]
+
+    refs = [os.path.join(base, r) for r in outfit["refs"]]
+    roles = list(outfit["ref_roles"])
+    if args.back and outfit.get("back_ref"):
+        refs.append(os.path.join(base, outfit["back_ref"]))
+        roles.append(outfit.get("back_role", "the back view"))
+    if args.ref:
+        refs = args.ref
+    ref_text = " ".join(f"Image {i} shows {role}." for i, role in enumerate(roles[:len(refs)], 1))
+
+    if args.prompt:
+        lock = f" {clean(soul['identity_lock'])} {clean(soul['texture'])}."
+        return refs, [clean(p).rstrip(".") + "." + lock for p in args.prompt], gen
+
+    d = soul.get("defaults", {})
+    fields = {
+        "refs": ref_text,
+        "framing": args.framing or d.get("framing", "waist up"),
+        "pose": args.pose or d.get("pose", "standing naturally"),
+        "expression": args.expression or d.get("expression", "calm expression"),
+        "outfit": clean(outfit["description"]),
+        "identity": clean(soul["identity"]),
+        "texture": clean(soul["texture"]),
+        "identity_lock": clean(soul["identity_lock"]),
+        "style": clean(soul["style"]),
+    }
+    prompts = [clean(soul["template"].format(scene=scene, **fields))
+               for scene in (args.scene or soul.get("scenes", ["plain light grey studio background"]))]
+    return refs, prompts, gen
+
+
 def main():
     args = parse_args()
-    if not torch.cuda.is_available():
-        raise SystemExit("No CUDA GPU detected. Run this on a GPU VM.")
-    if args.width % 16 or args.height % 16:
-        raise SystemExit("--width and --height must be multiples of 16")
-
-    refs = []
-    for path in args.ref:
+    refs, prompts, gen = build_jobs(args)
+    steps = args.steps or gen["steps"]
+    width, height = args.width or gen["width"], args.height or gen["height"]
+    seeds = args.seed or gen["seeds"]
+    if width % 16 or height % 16:
+        raise SystemExit("width and height must be multiples of 16")
+    for i, path in enumerate(refs, 1):
         if not os.path.exists(path):
             raise SystemExit(f"Reference image not found: {path}")
-        refs.append(load_image(path).convert("RGB"))
-        print(f"image {len(refs)}: {path}")
+        print(f"image {i}: {path}")
+    print(f"{len(prompts)} prompt(s) x {len(seeds)} seed(s), {steps} steps, {width}x{height}")
+
+    if args.print_prompt:
+        for i, prompt in enumerate(prompts, 1):
+            print(f"\n--- prompt {i}\n{prompt}")
+        return
+
+    import torch
+    from diffusers import Flux2KleinPipeline
+    from diffusers.utils import load_image
+
+    if not torch.cuda.is_available():
+        raise SystemExit("No CUDA GPU detected. Run this on a GPU VM.")
+    images = [load_image(p).convert("RGB") for p in refs]
 
     dtype = torch.float16 if args.fp16 else torch.bfloat16
-    pipe = Flux2KleinPipeline.from_pretrained(MODEL_ID, torch_dtype=dtype)
+    pipe = Flux2KleinPipeline.from_pretrained(gen["model"], torch_dtype=dtype)
     if args.no_offload:
         pipe.to("cuda")
     else:
         pipe.enable_model_cpu_offload()
 
     os.makedirs(args.out, exist_ok=True)
-    prompts = args.prompt or DEFAULT_PROMPTS
+    tag = "raw" if args.no_soul else args.outfit
     for i, prompt in enumerate(prompts, 1):
-        for seed in args.seed:
+        with open(os.path.join(args.out, f"{tag}_p{i}.txt"), "w", encoding="utf-8") as f:
+            f.write(prompt + "\n\n" + "\n".join(refs) + "\n")
+        for seed in seeds:
             t0 = time.time()
             image = pipe(
-                image=refs,
+                image=images,
                 prompt=prompt,
-                width=args.width,
-                height=args.height,
-                num_inference_steps=args.steps,
+                width=width,
+                height=height,
+                num_inference_steps=steps,
                 guidance_scale=1.0,
                 generator=torch.Generator("cpu").manual_seed(seed),
             ).images[0]
-            path = os.path.join(args.out, f"p{i}_s{seed}.png")
+            path = os.path.join(args.out, f"{tag}_p{i}_s{seed}.png")
             image.save(path)
             print(f"Saved {path}  ({time.time() - t0:.0f}s, "
                   f"VRAM peak {torch.cuda.max_memory_allocated() / 2**30:.1f} GB)", flush=True)

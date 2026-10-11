@@ -6,5 +6,6 @@ peft>=0.15.0
 safetensors
 opencv-python-headless<5   # 5.x dropped the Haar face cascades used by the face pass
 numpy
+pyyaml                  # soul.yaml
 huggingface_hub>=0.30.0
 pillow

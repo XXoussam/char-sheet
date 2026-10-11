@@ -1,0 +1,111 @@
+# Character soul file: the single source of truth for every generation of this character.
+# Practice character (pipeline testing only, not for commercial use, label outputs as AI-generated).
+# For a new character, copy this file and change id, identity, texture and outfits; keep the structure.
+#
+# Used by:  python vm/ref_gen.py --soul soul.yaml --outfit sig --scene "standing in a bright modern kitchen"
+# Rule: describe only what is visible. Never put a real person's name in any field.
+
+id: practice_char_v1
+trigger: ohwx_char            # LoRA trigger word, only used if a LoRA is trained again
+
+# ---------------------------------------------------------------------------------------------
+# Identity: never changes between images, whatever the outfit, scene or angle.
+identity: >-
+  elderly man around 70, medium build, average height,
+  medium olive-brown skin,
+  oval face with a broad jaw and full cheeks,
+  deep-set dark brown eyes with heavy upper lids and visible lower eye bags,
+  thick dark eyebrows with some grey hairs, a deep horizontal frown line between them,
+  strong, broad, prominent nose with a rounded tip,
+  full lips, the lower lip fuller,
+  thin grey-and-black moustache and a short, sparse grey-and-black goatee with stubble along the jaw,
+  voluminous dark black curly hair with grey strands, reaching over the ears and the nape
+
+# Skin and face texture: what keeps the face from looking airbrushed or waxy.
+texture: >-
+  Natural aged skin with clearly visible pores, deep forehead wrinkles, crow's feet around the eyes,
+  deep nasolabial folds, a few small dark sun spots on the cheeks and temples,
+  a slight natural sheen on the nose and forehead, uneven natural skin tone,
+  no smoothing, no retouching, no makeup, no plastic or waxy look
+
+# Locks appended to every prompt. "image 1" is always the face reference of the chosen outfit.
+identity_lock: >-
+  The man must be exactly the man from image 1: same face shape, eyes, nose, lips, wrinkles,
+  skin tone, moustache, goatee and curly hair. Keep his skin texture as detailed and natural as in image 1.
+style: >-
+  Photorealistic photograph, 50mm lens, natural light, sharp focus on his face,
+  high detail, true-to-life colors.
+
+# ---------------------------------------------------------------------------------------------
+# Outfits. refs are passed to the model in this order (image 1, image 2, ...); paths are relative
+# to this file. ref_roles is what each image is used for and is written into the prompt.
+outfits:
+  sig:
+    name: signature white suit
+    description: >-
+      white linen mandarin-collar jacket with covered white buttons and covered-button cuffs,
+      a small green Africa-shaped patch on the chest pocket, matching white linen trousers,
+      black polished leather oxford shoes, a gold ring on his right hand,
+      and a mustard-tan silk turban wrapped around the head with the loose tail hanging behind the shoulder
+    glasses: none
+    refs:
+      - A-closeup-face-front.png
+      - B-fullbody-front.png
+    ref_roles:
+      - his face, hair and skin texture
+      - his body proportions and the exact outfit
+    back_ref: D-back-view.png      # add for rear or three-quarter-rear shots
+    back_role: the back of the jacket and the turban tail
+
+  o2:
+    name: brown shawl outfit
+    description: >-
+      a brown long-sleeved collared shirt with tone-on-tone embroidery down the chest placket,
+      a large brown wool shawl draped over his left shoulder and across the body, with a fringed edge,
+      loose brown trousers, black polished leather shoes, a gold signet ring on his right hand,
+      a round flat-topped black felt cap, and thin rimless glasses with silver temples
+    glasses: thin rimless glasses with silver temples
+    refs:
+      - refs_outfit2/O2-face-closeup-glasses-hat.png
+      - refs_outfit2/O2-body-front-headless.png
+    ref_roles:
+      - his face, hair, glasses, cap and skin texture
+      - the exact outfit and how the shawl is draped
+    back_ref: refs_outfit2/O2-back-view.png
+    back_role: the back of the shawl, its fringe and the cap
+
+# ---------------------------------------------------------------------------------------------
+# Prompt template. Fields: {framing} {pose} {expression} {outfit} {scene} {refs} {identity}
+# {texture} {identity_lock} {style}
+template: >-
+  {refs} The man from image 1, {framing}, {pose}, {expression}, wearing {outfit}, {scene}.
+  He is an {identity}. {texture}. {identity_lock} {style}
+
+defaults:
+  framing: waist up
+  pose: standing naturally, relaxed shoulders
+  expression: friendly, calm expression
+
+# Scenes used when no --scene is given (real estate presenter test set).
+scenes:
+  - standing in a bright modern kitchen with a white marble island, presenting it with one hand
+  - standing at the open front door of a modern white villa, welcoming gesture toward the entrance, sunny garden
+  - in a spacious living room with large windows and soft daylight, one hand extended toward the room
+  - on a green garden lawn in front of the house, golden hour light
+
+# ---------------------------------------------------------------------------------------------
+generation:
+  model: black-forest-labs/FLUX.2-klein-4B
+  steps: 6                 # 4 = distilled default; 6 keeps more skin detail
+  width: 832
+  height: 1216
+  seeds: [42, 7, 1234]     # fixed seeds so results are reproducible and comparable
+
+# Keep an image only if every check passes.
+qa:
+  - face matches image 1 (nose, eyes, lips, wrinkles, moustache and goatee shape, skin age)
+  - skin shows pores and wrinkles, no airbrushed or waxy look
+  - hair is dark curly with grey strands, same volume and length
+  - outfit matches the outfit reference (colors, collar, embroidery or patch, ring, headwear, glasses)
+  - build and proportions match the body reference
+  - no extra people, no text or logos, no distorted hands

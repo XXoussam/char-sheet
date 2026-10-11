@@ -10,6 +10,7 @@ Character-consistency pipeline practice: reference images -> generated dataset -
 | Path | Content |
 |---|---|
 | `A-*.png` ... `D-*.png`, `X-*.png` | Reference images (face, body front, side, back, tapestry) |
+| `soul.yaml` | Character soul file: identity, skin texture, outfits and their references, prompt template, seeds, QA. Read by `vm/ref_gen.py` |
 | `refs_outfit2/` | Second outfit references (brown embroidered shirt, draped brown shawl, black cap, rimless glasses): face close-up, headless body front, back |
 | `generate_dataset.py` | Generates dataset shots with the OpenAI Images API (gpt-image-2) |
 | `dataset/` | Generated shots + captions (`rejected/` = discarded tries, `log.jsonl` = cost log) |
@@ -24,10 +25,14 @@ Character-consistency pipeline practice: reference images -> generated dataset -
 ```bash
 cd /mnt/flux-project && source venv/bin/activate
 pip install -U -r char-sheet/vm/requirements.txt
-python char-sheet/vm/ref_gen.py                                   # 4 real estate test prompts, ref = A
-python char-sheet/vm/ref_gen.py --ref char-sheet/A-closeup-face-front.png char-sheet/B-fullbody-front.png \
-    --prompt "The man from image 1, wearing the outfit from image 2, ..." --seed 1 2 3
+python char-sheet/vm/ref_gen.py                                   # soul.yaml, outfit sig, its 4 test scenes
+python char-sheet/vm/ref_gen.py --outfit o2 --scene "standing in a bright modern kitchen"
+python char-sheet/vm/ref_gen.py --outfit o2 --back --framing "full body" --scene "walking away along a garden path"
+python char-sheet/vm/ref_gen.py --outfit sig --print-prompt       # show the built prompt, no GPU
 ```
+
+Every image is built from `soul.yaml` (same references, identity, skin texture, outfit, seeds). Each
+prompt is saved next to its images as `<outfit>_p<N>.txt`.
 
 Images go to `char-sheet/vm/ref_out/`.
 
