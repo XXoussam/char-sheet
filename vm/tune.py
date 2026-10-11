@@ -400,7 +400,9 @@ def sample(args):
     pipe = StableDiffusionXLPipeline.from_pretrained(model, vae=vae, torch_dtype=DTYPE,
                                                      variant="fp16", use_safetensors=True).to("cuda")
     pipe.vae.enable_slicing()
-    img2img = StableDiffusionXLImg2ImgPipeline.from_pipe(pipe) if args.face_fix else None
+    pipe.vae.enable_tiling()
+    # from_pipe shares the modules; without torch_dtype it casts them all to fp32 (double the VRAM).
+    img2img = StableDiffusionXLImg2ImgPipeline.from_pipe(pipe, torch_dtype=DTYPE) if args.face_fix else None
 
     for lora in args.lora:
         if lora.lower() == "none":
