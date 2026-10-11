@@ -66,6 +66,11 @@ def parse_args():
     p.add_argument("--height", type=int, default=None)
     p.add_argument("--out", default=os.path.join(HERE, "ref_out"))
     p.add_argument("--print-prompt", action="store_true", help="print prompts and exit (no GPU needed)")
+    p.add_argument("--ref-max-side", type=int, default=0,
+                   help="downscale reference images to this longest side (e.g. 768) for less VRAM and time; "
+                        "0 = keep (the pipeline caps each reference at ~1 MP)")
+    p.add_argument("--no-attn-fp16", action="store_true",
+                   help="disable the fp16 attention patch used on GPUs without bf16 attention kernels (T4)")
     p.add_argument("--fp16", action="store_true",
                    help="run in fp16 instead of bf16 (try if bf16 is too slow on the T4; may give black images)")
     p.add_argument("--no-offload", action="store_true",
@@ -123,6 +128,30 @@ def build_jobs(args):
     return refs, prompts, gen
 
 
+def patch_attention_fp16(torch):
+    """Run bf16 attention in fp16 on pre-Ampere GPUs.
+
+    The T4 (sm75) has no memory-efficient or flash SDPA kernel for bf16, so PyTorch falls back to the
+    math kernel, which materializes the full attention matrix (~14 GB with two references). fp16 has a
+    memory-efficient kernel on the T4. Only q/k/v are cast (FLUX normalizes q and k, so fp16 is safe here);
+    the rest of the model stays in bf16, which avoids the fp16 overflow that gives black images.
+    """
+    F = torch.nn.functional
+    sdpa = F.scaled_dot_product_attention
+
+    def cast(x):
+        return x.half() if torch.is_tensor(x) and x.dtype == torch.bfloat16 else x
+
+    def sdpa_fp16(*args, **kwargs):
+        ref = next((a for a in list(args) + list(kwargs.values()) if torch.is_tensor(a)), None)
+        if ref is None or ref.dtype != torch.bfloat16:
+            return sdpa(*args, **kwargs)
+        out = sdpa(*[cast(a) for a in args], **{k: cast(v) for k, v in kwargs.items()})
+        return out.to(torch.bfloat16)
+
+    F.scaled_dot_product_attention = sdpa_fp16
+
+
 def main():
     args = parse_args()
     refs, prompts, gen = build_jobs(args)
@@ -149,8 +178,15 @@ def main():
     if not torch.cuda.is_available():
         raise SystemExit("No CUDA GPU detected. Run this on a GPU VM.")
     images = [load_image(p).convert("RGB") for p in refs]
+    if args.ref_max_side:
+        for img in images:
+            img.thumbnail((args.ref_max_side, args.ref_max_side))
+        print(f"references downscaled to max {args.ref_max_side}px: {[im.size for im in images]}")
 
     dtype = torch.float16 if args.fp16 else torch.bfloat16
+    if dtype == torch.bfloat16 and torch.cuda.get_device_capability()[0] < 8 and not args.no_attn_fp16:
+        patch_attention_fp16(torch)
+        print("GPU has no bf16 attention kernels: running attention in fp16 (rest of the model in bf16)")
     pipe = Flux2KleinPipeline.from_pretrained(gen["model"], torch_dtype=dtype)
     if args.no_offload:
         pipe.to("cuda")
