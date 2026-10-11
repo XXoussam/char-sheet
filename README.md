@@ -12,10 +12,23 @@ Character-consistency pipeline practice: reference images -> generated dataset -
 | `A-*.png` ... `D-*.png`, `X-*.png` | Reference images (face, body front, side, back, tapestry) |
 | `generate_dataset.py` | Generates dataset shots with the OpenAI Images API (gpt-image-2) |
 | `dataset/` | Generated shots + captions (`rejected/` = discarded tries, `log.jsonl` = cost log) |
+| `vm/ref_gen.py` | FLUX.2 [klein] 4B: new shots from reference images, no training (Apache 2.0) |
 | `vm/tune.py` | SDXL LoRA training (`train`) and test images (`sample`) for a 16 GB T4 |
 | `vm/requirements.txt` | Python packages for the VM |
 | `vm/train_data/` | The 20 training images with one caption `.txt` each (trigger word `ohwx_char`) |
 | `CLAUDE.md` | Project notes and decisions |
+
+## Generate from a reference image on the VM (FLUX.2 klein)
+
+```bash
+cd /mnt/flux-project && source venv/bin/activate
+pip install -U -r char-sheet/vm/requirements.txt
+python char-sheet/vm/ref_gen.py                                   # 4 real estate test prompts, ref = A
+python char-sheet/vm/ref_gen.py --ref char-sheet/A-closeup-face-front.png char-sheet/B-fullbody-front.png \
+    --prompt "The man from image 1, wearing the outfit from image 2, ..." --seed 1 2 3
+```
+
+Images go to `char-sheet/vm/ref_out/`.
 
 ## Train on the VM
 

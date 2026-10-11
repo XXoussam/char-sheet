@@ -12,3 +12,4 @@ lora_out/
 samples/
 vm/lora_*/
 vm/samples*/
+vm/ref_out*/

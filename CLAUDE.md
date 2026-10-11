@@ -47,6 +47,8 @@ Deliverable chain: consistent character sheet -> LoRA / reference-based generati
 - LoRA trigger word: `ohwx_char` (change it per character).
 - Quality gate: discard any image where the face, hair, moustache/goatee or build differs from A and B.
 
+- SDXL LoRA (stock base, rank 16, 1500 steps, 42 min on the T4) gave drifting, waxy faces. Decision (2026-10-11): stop tuning, use reference-image generation with FLUX.2 [klein] 4B (`vm/ref_gen.py`, Apache 2.0, ~13 GB). Z-Image was considered but its public weights are text-only (the diffusers Omni reference pipeline has no released weights).
+
 ## Open questions
 - Which tool for the final LoRA (FLUX Kontext vs Qwen-Image-Edit vs SDXL) and on which GPU.
 - Which original or licensed character replaces the practice character.

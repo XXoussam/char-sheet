@@ -1,5 +1,5 @@
-diffusers>=0.35.0
-transformers>=4.50.0
+diffusers>=0.37.0       # Flux2KleinPipeline (ref_gen.py)
+transformers>=4.51.0    # Qwen3 text encoder for FLUX.2 klein
 accelerate>=1.0.0
 bitsandbytes>=0.45.0
 peft>=0.15.0
