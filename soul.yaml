@@ -2,7 +2,7 @@
 # Practice character (pipeline testing only, not for commercial use, label outputs as AI-generated).
 # For a new character, copy this file and change id, identity, texture and outfits; keep the structure.
 #
-# Used by:  python vm/ref_gen.py --soul soul.yaml --outfit sig --scene "standing in a bright modern kitchen"
+# Used by:  python vm/ref_gen.py --soul soul.yaml --outfit sig --scene "on a sunny city street"
 # Rule: describe only what is visible. Never put a real person's name in any field.
 
 id: practice_char_v1
@@ -86,12 +86,12 @@ defaults:
   pose: standing naturally, relaxed shoulders
   expression: friendly, calm expression
 
-# Scenes used when no --scene is given (real estate presenter test set).
+# Scenes used when no --scene is given: a consistency test set that varies light, background and distance.
 scenes:
-  - standing in a bright modern kitchen with a white marble island, presenting it with one hand
-  - standing at the open front door of a modern white villa, welcoming gesture toward the entrance, sunny garden
-  - in a spacious living room with large windows and soft daylight, one hand extended toward the room
-  - on a green garden lawn in front of the house, golden hour light
+  - plain light grey studio background, soft even light
+  - on a sunny city street with blurred buildings behind him
+  - sitting at a cafe table by a window, soft daylight
+  - in a green park at golden hour, warm backlight
 
 # ---------------------------------------------------------------------------------------------
 generation:

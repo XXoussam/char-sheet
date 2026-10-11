@@ -26,7 +26,7 @@ Character-consistency pipeline practice: reference images -> generated dataset -
 cd /mnt/flux-project && source venv/bin/activate
 pip install -U -r char-sheet/vm/requirements.txt
 python char-sheet/vm/ref_gen.py                                   # soul.yaml, outfit sig, its 4 test scenes
-python char-sheet/vm/ref_gen.py --outfit o2 --scene "standing in a bright modern kitchen"
+python char-sheet/vm/ref_gen.py --outfit o2 --scene "on a sunny city street"
 python char-sheet/vm/ref_gen.py --outfit o2 --back --framing "full body" --scene "walking away along a garden path"
 python char-sheet/vm/ref_gen.py --outfit sig --print-prompt       # show the built prompt, no GPU
 ```

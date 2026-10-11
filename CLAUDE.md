@@ -1,9 +1,9 @@
-# AI character consistency for a real estate agent video
+# AI character image consistency practice
 
 ## Goal
-Make a short video for a real estate agency in which a recognizable character acts as the agent presenting a house (door, living room, kitchen, garden...). The character must look identical across every shot, from every angle, in several outfits and locations.
+Practice keeping one character identical across generated images: same face, skin texture and outfit, from every angle, in different poses and locations. There is no client or end product; this is image-consistency practice only.
 
-Deliverable chain: consistent character sheet -> LoRA / reference-based generation of new shots -> image-to-video -> voice + lip sync -> edit.
+Pipeline being practiced: reference set -> reference-based generation of new shots (FLUX.2 klein, `soul.yaml`) -> optionally image-to-video, voice and lip sync later.
 
 ## Characters and rights
 - Practice character (current): an older man in a white linen mandarin-collar suit and mustard turban. Built from photos of a real, deceased public figure, used ONLY to practice the pipeline.

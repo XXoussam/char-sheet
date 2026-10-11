@@ -81,10 +81,10 @@ BUCKETS_1024 = [(1024, 1024), (896, 1152), (832, 1216), (768, 1344),
 DEFAULT_PROMPTS = [
     "ohwx_char, a man, close-up portrait, front view, neutral expression, wearing a turban, "
     "white mandarin-collar jacket, plain grey studio background",
-    "ohwx_char, a man, waist up, welcoming expression, bare curly hair, navy blazer and white shirt, "
-    "standing in a bright modern kitchen",
-    "ohwx_char, a man, full body, standing at the front door of a house, friendly expression, "
-    "bare curly hair, beige linen suit, sunny garden",
+    "ohwx_char, a man, waist up, friendly expression, bare curly hair, navy blazer and white shirt, "
+    "sitting at a cafe table by a window",
+    "ohwx_char, a man, full body, walking on a sunny city street, slight smile, "
+    "bare curly hair, beige linen suit",
     "ohwx_char, a man, full body, three-quarter view, wearing a turban, white linen mandarin-collar suit, "
     "plain grey studio background",
 ]

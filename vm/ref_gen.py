@@ -13,7 +13,7 @@ built from the same description.
 
 Usage:
   python ref_gen.py                                          # soul.yaml, outfit sig, its test scenes
-  python ref_gen.py --outfit o2 --scene "standing in a bright modern kitchen"
+  python ref_gen.py --outfit o2 --scene "on a sunny city street"
   python ref_gen.py --outfit o2 --framing "full body" --back --scene "walking away along a garden path"
   python ref_gen.py --outfit sig --expression "laughing" --seed 1 2 3
   python ref_gen.py --no-soul --ref face.png --prompt "The man from image 1 ..."   # raw mode
