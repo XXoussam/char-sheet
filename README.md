@@ -10,6 +10,7 @@ Character-consistency pipeline practice: reference images -> generated dataset -
 | Path | Content |
 |---|---|
 | `A-*.png` ... `D-*.png`, `X-*.png` | Reference images (face, body front, side, back, tapestry) |
+| `refs_outfit2/` | Second outfit references (brown embroidered shirt, draped brown shawl, black cap, rimless glasses): face close-up, headless body front, back |
 | `generate_dataset.py` | Generates dataset shots with the OpenAI Images API (gpt-image-2) |
 | `dataset/` | Generated shots + captions (`rejected/` = discarded tries, `log.jsonl` = cost log) |
 | `vm/ref_gen.py` | FLUX.2 [klein] 4B: new shots from reference images, no training (Apache 2.0) |
