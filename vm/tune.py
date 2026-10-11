@@ -11,7 +11,7 @@ the trigger word (ohwx_char).
 
 Usage:
   python tune.py train                                   # train_data/ -> lora_out/
-  python tune.py train --steps 2000 --rank 32 --data train_data --out lora_out
+  python tune.py train --model SG161222/RealVisXL_V5.0 --rank 32 --steps 2500 --out lora_realvis
   python tune.py sample                                  # test images from lora_out/final
   python tune.py sample --lora lora_out/checkpoint-1000 lora_out/final --scale 0.9
   python tune.py sample --prompt "ohwx_char, a man, ..." --seed 7
@@ -20,6 +20,11 @@ Notes for the T4: no bf16, so training runs in fp16 with a grad scaler. Text
 encoders and VAE run once to cache embeddings and latents, then are freed, so
 only the UNet (with LoRA) stays on the GPU during training. Only the UNet is
 trained. No horizontal flips: the chest patch and turban tail are one-sided.
+
+The base model id is saved next to each LoRA (base_model.txt) and `sample`
+loads the same base automatically. `sample` also runs a face pass by default:
+it finds the face, regenerates it at 1024 px with the LoRA (img2img) and blends
+it back, which fixes small, soft faces in waist-up and full-body shots.
 """
 import argparse
 import gc
@@ -46,17 +51,25 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 import numpy as np
 import torch
 import torch.nn.functional as F
-from diffusers import AutoencoderKL, DDPMScheduler, StableDiffusionXLPipeline, UNet2DConditionModel
+from diffusers import (AutoencoderKL, DDPMScheduler, StableDiffusionXLImg2ImgPipeline,
+                       StableDiffusionXLPipeline, UNet2DConditionModel)
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import cast_training_params, compute_snr
 from diffusers.utils import convert_state_dict_to_diffusers
 from peft import LoraConfig
 from peft.utils import get_peft_model_state_dict
-from PIL import Image, ImageOps
+from PIL import Image, ImageDraw, ImageFilter, ImageOps
 from transformers import AutoTokenizer, CLIPTextModel, CLIPTextModelWithProjection
 
-MODEL_ID = "stabilityai/stable-diffusion-xl-base-1.0"
+MODEL_ID = "stabilityai/stable-diffusion-xl-base-1.0"   # photoreal alternative: SG161222/RealVisXL_V5.0
 VAE_ID = "madebyollin/sdxl-vae-fp16-fix"   # the stock SDXL VAE produces NaNs in fp16
+BASE_FILE = "base_model.txt"
+# LoRA target layers: attention only, or attention + transformer projections and feed-forward
+# ("full" learns the face better at the cost of a bigger file).
+TARGETS = {
+    "attn": ["to_k", "to_q", "to_v", "to_out.0"],
+    "full": ["to_k", "to_q", "to_v", "to_out.0", "proj_in", "proj_out", "ff.net.0.proj", "ff.net.2"],
+}
 HERE = os.path.dirname(os.path.abspath(__file__))
 DTYPE = torch.float16
 IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp")
@@ -86,6 +99,8 @@ def parse_args():
     t = sub.add_parser("train", help="train a LoRA on the dataset")
     t.add_argument("--data", default=os.path.join(HERE, "train_data"))
     t.add_argument("--out", default=os.path.join(HERE, "lora_out"))
+    t.add_argument("--model", default=MODEL_ID, help="SDXL base model (Hugging Face id, diffusers format)")
+    t.add_argument("--targets", default="full", choices=sorted(TARGETS), help="LoRA target layers")
     t.add_argument("--trigger", default="ohwx_char",
                    help="used as the caption when an image has no .txt")
     t.add_argument("--resolution", type=int, default=1024, help="bucket base size (768 = faster, softer)")
@@ -102,7 +117,14 @@ def parse_args():
     t.add_argument("--no-sample", action="store_true", help="skip test images after training")
 
     s = sub.add_parser("sample", help="generate test images with one or more LoRAs")
-    s.add_argument("--lora", nargs="+", default=[os.path.join(HERE, "lora_out", "final")])
+    s.add_argument("--lora", nargs="+", default=[os.path.join(HERE, "lora_out", "final")],
+                   help="LoRA folders; 'none' = base model without LoRA")
+    s.add_argument("--model", default=None,
+                   help="base model (default: the one saved with the first LoRA, else SDXL base)")
+    s.add_argument("--no-face-fix", dest="face_fix", action="store_false",
+                   help="skip the face pass (only the raw image is saved)")
+    s.add_argument("--face-strength", type=float, default=0.45,
+                   help="face pass denoise: lower keeps more of the original face, higher follows the LoRA more")
     s.add_argument("--prompt", nargs="+", default=None, help="default: built-in test prompts")
     s.add_argument("--negative", default=DEFAULT_NEGATIVE)
     s.add_argument("--out", default=os.path.join(HERE, "samples"))
@@ -170,14 +192,14 @@ def encode_prompt(tokenizers, text_encoders, prompt):
 
 
 @torch.no_grad()
-def cache_embeddings(items, device):
+def cache_embeddings(items, device, model):
     """Encode captions and images once, then free the text encoders and VAE."""
     print("Caching text embeddings...")
-    tokenizers = [AutoTokenizer.from_pretrained(MODEL_ID, subfolder=s, use_fast=False)
+    tokenizers = [AutoTokenizer.from_pretrained(model, subfolder=s, use_fast=False)
                   for s in ("tokenizer", "tokenizer_2")]
     text_encoders = [
-        CLIPTextModel.from_pretrained(MODEL_ID, subfolder="text_encoder", torch_dtype=DTYPE, variant="fp16"),
-        CLIPTextModelWithProjection.from_pretrained(MODEL_ID, subfolder="text_encoder_2",
+        CLIPTextModel.from_pretrained(model, subfolder="text_encoder", torch_dtype=DTYPE, variant="fp16"),
+        CLIPTextModelWithProjection.from_pretrained(model, subfolder="text_encoder_2",
                                                     torch_dtype=DTYPE, variant="fp16"),
     ]
     for enc in text_encoders:
@@ -206,11 +228,13 @@ def free_memory():
 
 # ----------------------------------------------------------------------------- train
 
-def save_lora(unet, path):
+def save_lora(unet, path, model):
     os.makedirs(path, exist_ok=True)
     state = convert_state_dict_to_diffusers(get_peft_model_state_dict(unet))
     StableDiffusionXLPipeline.save_lora_weights(save_directory=path, unet_lora_layers=state,
                                                 safe_serialization=True)
+    with open(os.path.join(path, BASE_FILE), "w", encoding="utf-8") as f:
+        f.write(model + "\n")
     print(f"  saved LoRA -> {path}")
 
 
@@ -222,16 +246,17 @@ def train(args):
     torch.manual_seed(args.seed)
 
     print(f"Dataset: {args.data}")
+    print(f"Base model: {args.model}")
     items = load_dataset(args.data, args.trigger, args.resolution)
-    scaling = cache_embeddings(items, device)
+    scaling = cache_embeddings(items, device, args.model)
 
     print("Loading UNet...")
-    noise_scheduler = DDPMScheduler.from_pretrained(MODEL_ID, subfolder="scheduler")
-    unet = UNet2DConditionModel.from_pretrained(MODEL_ID, subfolder="unet", torch_dtype=DTYPE, variant="fp16")
+    noise_scheduler = DDPMScheduler.from_pretrained(args.model, subfolder="scheduler")
+    unet = UNet2DConditionModel.from_pretrained(args.model, subfolder="unet", torch_dtype=DTYPE, variant="fp16")
     unet.to(device).requires_grad_(False)
     unet.enable_gradient_checkpointing()
     unet.add_adapter(LoraConfig(r=args.rank, lora_alpha=args.alpha or args.rank, init_lora_weights="gaussian",
-                                target_modules=["to_k", "to_q", "to_v", "to_out.0"]))
+                                target_modules=TARGETS[args.targets]))
     cast_training_params(unet, dtype=torch.float32)   # LoRA weights in fp32, frozen base stays fp16
     params = [p for p in unet.parameters() if p.requires_grad]
     print(f"Trainable LoRA parameters: {sum(p.numel() for p in params) / 1e6:.1f}M")
@@ -294,21 +319,73 @@ def train(args):
                   f"VRAM {torch.cuda.max_memory_allocated() / 2**30:.1f} GB", flush=True)
             running = 0.0
         if step % args.save_every == 0 and step != args.steps:
-            save_lora(unet, os.path.join(args.out, f"checkpoint-{step}"))
+            save_lora(unet, os.path.join(args.out, f"checkpoint-{step}"), args.model)
 
     final = os.path.join(args.out, "final")
-    save_lora(unet, final)
+    save_lora(unet, final, args.model)
     print(f"Done in {(time.time() - t0) / 60:.0f} min.")
 
     if not args.no_sample:
         del unet, optimizer, lr_scheduler, scaler, params, items
         free_memory()
-        sample(argparse.Namespace(lora=[final], prompt=None, negative=DEFAULT_NEGATIVE,
+        sample(argparse.Namespace(lora=[final], model=args.model, prompt=None, negative=DEFAULT_NEGATIVE,
                                   out=os.path.join(args.out, "samples"), scale=1.0, seed=args.seed,
-                                  steps=30, guidance=6.5, width=832, height=1216))
+                                  steps=30, guidance=6.5, width=832, height=1216,
+                                  face_fix=True, face_strength=0.45))
 
 
 # ----------------------------------------------------------------------------- sample
+
+def base_model_for(loras):
+    for lora in loras:
+        path = os.path.join(lora, BASE_FILE)
+        if lora.lower() != "none" and os.path.exists(path):
+            return open(path, encoding="utf-8").read().strip()
+    return MODEL_ID
+
+
+def find_face(image):
+    """Return the largest face box (x, y, w, h) found by OpenCV, or None."""
+    import cv2
+    gray = cv2.cvtColor(np.asarray(image), cv2.COLOR_RGB2GRAY)
+    faces = []
+    for name in ("haarcascade_frontalface_default.xml", "haarcascade_profileface.xml"):
+        cascade = cv2.CascadeClassifier(os.path.join(cv2.data.haarcascades, name))
+        faces += list(cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(48, 48)))
+    return max(faces, key=lambda f: f[2] * f[3]) if faces else None
+
+
+def fix_face(img2img, image, prompt, args):
+    """Regenerate the face region at 1024 px with the LoRA and blend it back."""
+    box = find_face(image)
+    if box is None:
+        print("  no face found, face pass skipped")
+        return None
+    x, y, w, h = (int(v) for v in box)
+    side = int(max(w, h) * 2.0)                                     # include hair, turban and chin
+    if side >= 0.8 * min(image.size):
+        print("  face already fills the frame, face pass skipped")
+        return None
+    left = int(min(max(x + w / 2 - side / 2, 0), image.width - side))
+    top = int(min(max(y + h / 2 - side / 2, 0), image.height - side))
+    crop = image.crop((left, top, left + side, top + side)).resize((1024, 1024), Image.LANCZOS)
+
+    trigger = prompt.split(",")[0].strip()
+    face_prompt = (f"{trigger}, a man, close-up portrait of his face, natural skin texture with visible pores, "
+                   "sharp detailed eyes, photorealistic photograph")
+    fixed = img2img(prompt=face_prompt, negative_prompt=args.negative, image=crop,
+                    strength=args.face_strength, num_inference_steps=args.steps, guidance_scale=args.guidance,
+                    generator=torch.Generator("cpu").manual_seed(args.seed)).images[0]
+    fixed = fixed.resize((side, side), Image.LANCZOS)
+
+    margin = int(side * 0.12)
+    mask = Image.new("L", (side, side), 0)
+    ImageDraw.Draw(mask).ellipse((margin, margin, side - margin, side - margin), fill=255)
+    mask = mask.filter(ImageFilter.GaussianBlur(side * 0.06))
+    out = image.copy()
+    out.paste(fixed, (left, top), mask)
+    return out
+
 
 @torch.no_grad()
 def sample(args):
@@ -316,15 +393,21 @@ def sample(args):
         raise SystemExit("No CUDA GPU detected. Run this on a GPU VM.")
     prompts = args.prompt or DEFAULT_PROMPTS
     os.makedirs(args.out, exist_ok=True)
+    model = args.model or base_model_for(args.lora)
+    print(f"Base model: {model}")
 
     vae = AutoencoderKL.from_pretrained(VAE_ID, torch_dtype=DTYPE)
-    pipe = StableDiffusionXLPipeline.from_pretrained(MODEL_ID, vae=vae, torch_dtype=DTYPE,
+    pipe = StableDiffusionXLPipeline.from_pretrained(model, vae=vae, torch_dtype=DTYPE,
                                                      variant="fp16", use_safetensors=True).to("cuda")
     pipe.vae.enable_slicing()
+    img2img = StableDiffusionXLImg2ImgPipeline.from_pipe(pipe) if args.face_fix else None
 
     for lora in args.lora:
-        tag = "base" if lora.lower() == "none" else os.path.basename(os.path.normpath(lora))
-        if tag != "base":
+        if lora.lower() == "none":
+            tag = "base"
+        else:
+            norm = os.path.normpath(lora)
+            tag = f"{os.path.basename(os.path.dirname(norm))}-{os.path.basename(norm)}"
             pipe.load_lora_weights(lora, adapter_name="char")
             pipe.set_adapters(["char"], adapter_weights=[args.scale])
         for i, prompt in enumerate(prompts, 1):
@@ -335,6 +418,11 @@ def sample(args):
             path = os.path.join(args.out, f"{tag}_p{i}_s{args.seed}.png")
             image.save(path)
             print(f"Saved {path}")
+            if img2img is not None:
+                fixed = fix_face(img2img, image, prompt, args)
+                if fixed is not None:
+                    fixed.save(path.replace(".png", "_face.png"))
+                    print(f"Saved {path.replace('.png', '_face.png')}")
         if tag != "base":
             pipe.unload_lora_weights()
 

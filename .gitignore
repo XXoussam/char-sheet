@@ -10,5 +10,5 @@ __pycache__/
 # training / sampling outputs (download them from the VM instead)
 lora_out/
 samples/
-vm/lora_out/
-vm/samples/
+vm/lora_*/
+vm/samples*/

@@ -4,6 +4,7 @@ accelerate>=1.0.0
 bitsandbytes>=0.45.0
 peft>=0.15.0
 safetensors
+opencv-python-headless<5   # 5.x dropped the Haar face cascades used by the face pass
 numpy
 huggingface_hub>=0.30.0
 pillow
